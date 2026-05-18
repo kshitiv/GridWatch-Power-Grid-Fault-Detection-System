@@ -9,15 +9,15 @@ import tempfile
 from flask import Flask, request, jsonify, send_from_directory
 
 from graph_loader      import load_graph
-from mst_algorithms    import prims, kruskals, compare_and_recommend
-from memory_allocator  import simulate_all_strategies, recommend_strategy
+from mst_algorithms    import prims, kruskals, compare_and_recommend, partial_mst_within_budget
+from memory_allocator  import simulate_all_strategies, recommend_strategy, compact_strategy
 
 # Serve static files from the workspace root so index.html, style.css and app.js
 # are available at '/'.
 app = Flask(__name__, static_folder='.', static_url_path='')
 
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-SAMPLE_DIR  = os.path.join(BASE_DIR, "samples")
+SAMPLE_DIR  = os.path.join(BASE_DIR, "sample")
 
 
 # ─────────────────────────────────────────────
@@ -25,7 +25,7 @@ SAMPLE_DIR  = os.path.join(BASE_DIR, "samples")
 # ─────────────────────────────────────────────
 @app.route('/')
 def home():
-    return app.send_static_file('index.html')
+    return send_from_directory('.', 'index.html')
 
 
 # ─────────────────────────────────────────────
@@ -122,6 +122,65 @@ def get_sample(fmt):
         return jsonify({"error": "Sample not found"}), 404
     with open(path) as f:
         return f.read(), 200, {"Content-Type": "text/plain"}
+
+
+# ─────────────────────────────────────────────
+#  BUDGET-CONSTRAINED PARTIAL MST
+# ─────────────────────────────────────────────
+@app.route("/api/budget", methods=["POST"])
+def run_budget():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    f   = request.files["file"]
+    ext = os.path.splitext(f.filename)[1].lower()
+    if ext not in (".csv", ".json"):
+        return jsonify({"error": "Only .csv or .json files are supported"}), 400
+
+    budget = request.form.get("budget", None)
+    if budget is None:
+        return jsonify({"error": "budget parameter required"}), 400
+    try:
+        budget = float(budget)
+    except ValueError:
+        return jsonify({"error": "budget must be a number"}), 400
+
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False, mode="wb") as tmp:
+        tmp.write(f.read())
+        tmp_path = tmp.name
+
+    try:
+        nodes, edges = load_graph(tmp_path)
+    except Exception as e:
+        os.unlink(tmp_path)
+        return jsonify({"error": f"Graph parse error: {str(e)}"}), 400
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    result = partial_mst_within_budget(nodes, edges, budget)
+    result["nodes"] = nodes
+    result["all_edges"] = [{"from": u, "to": v, "weight": w} for w, u, v in edges]
+    return jsonify(result)
+
+
+# ─────────────────────────────────────────────
+#  MEMORY COMPACTION
+# ─────────────────────────────────────────────
+@app.route("/api/compact", methods=["POST"])
+def run_compact():
+    data = request.get_json()
+    total_memory = data.get("total_memory", 512)
+    requests_raw = data.get("requests", [])
+    strategy     = data.get("strategy", "first_fit")
+
+    if not requests_raw:
+        return jsonify({"error": "No memory requests provided"}), 400
+    if strategy not in ("first_fit", "best_fit", "worst_fit"):
+        return jsonify({"error": "Invalid strategy"}), 400
+
+    result = compact_strategy(total_memory, requests_raw, strategy)
+    return jsonify(result)
 
 
 if __name__ == "__main__":

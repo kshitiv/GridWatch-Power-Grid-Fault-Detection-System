@@ -124,6 +124,56 @@ class MemorySimulator:
                 return True
         return False
 
+    def compact(self):
+        """
+        Memory compaction: slide all allocated blocks to the left,
+        merging all free space into one contiguous block at the end.
+        Returns a dict with before/after snapshots and a log of moves.
+        """
+        before_snapshot = self._snapshot()
+
+        used_blocks = [b for b in self.blocks if not b.free]
+        total_free  = sum(b.size for b in self.blocks if b.free)
+
+        moves = []
+        cursor = 0
+        new_blocks = []
+
+        for b in used_blocks:
+            if b.start != cursor:
+                moves.append({
+                    "label": b.label,
+                    "from":  b.start,
+                    "to":    cursor,
+                    "size":  b.size
+                })
+            new_b = MemoryBlock(cursor, b.size, free=False, label=b.label)
+            new_blocks.append(new_b)
+            cursor += b.size
+
+        # Single free block at the end (if any free space)
+        if total_free > 0:
+            new_blocks.append(MemoryBlock(cursor, total_free, free=True))
+
+        self.blocks = new_blocks
+        after_snapshot = self._snapshot()
+
+        self.log.append({
+            "action":   "COMPACT",
+            "detail":   f"▣ Compaction complete. Moved {len(moves)} block(s). "
+                        f"Free space consolidated: {total_free} KB contiguous.",
+            "moves":    moves,
+            "snapshot": after_snapshot
+        })
+
+        return {
+            "before":      before_snapshot,
+            "after":       after_snapshot,
+            "moves":       moves,
+            "total_free":  total_free,
+            "detail":      f"Moved {len(moves)} block(s). {total_free} KB consolidated into one free block."
+        }
+
     def stats(self):
         """Compute fragmentation and usage statistics."""
         total_free      = sum(b.size for b in self.blocks if b.free)
@@ -214,4 +264,31 @@ def recommend_strategy(results):
         "reasoning":   reasoning,
         "explanation": explanation.get(best, ""),
         "scores":      {k: v["stats"]["external_frag_ratio"] for k, v in results.items()}
+    }
+
+
+# ─────────────────────────────────────────────
+#  COMPACT A SPECIFIC STRATEGY'S FINAL STATE
+# ─────────────────────────────────────────────
+def compact_strategy(total_memory, requests, strategy):
+    """
+    Re-run simulation for one strategy, then compact.
+    Returns before/after snapshots plus move log.
+    """
+    sim = MemorySimulator(total_memory)
+    for req in requests:
+        if req["action"] == "alloc":
+            sim.allocate(req["label"], req["size"], strategy)
+        elif req["action"] == "free":
+            sim.deallocate(req["label"])
+
+    stats_before = sim.stats()
+    compaction   = sim.compact()
+    stats_after  = sim.stats()
+
+    return {
+        "strategy":      strategy,
+        "stats_before":  stats_before,
+        "stats_after":   stats_after,
+        "compaction":    compaction
     }

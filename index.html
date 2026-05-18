@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>GridWatch — Power Grid Fault Detection</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700;900&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet"/>
-<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="style.css?v=2" />
 </head>
 <body>
 
@@ -185,6 +185,61 @@
       </div>
     </div>
 
+    <!-- Budget Constraint Panel -->
+    <div class="panel red-accent" id="budgetPanel">
+      <div class="panel-title" style="color:var(--red)">💰 BUDGET CONSTRAINT — PARTIAL MST</div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:14px;">
+        Set a maximum cable budget (km). If the full MST exceeds it, the tool finds the <strong>maximum number of neighbourhoods</strong> connectable within that budget.
+      </p>
+      <div class="field-row">
+        <div class="field-group">
+          <label class="field-label">BUDGET (KM)</label>
+          <input type="number" class="field-input wide" id="budgetInput" value="50" min="1" step="0.5">
+        </div>
+        <div class="field-group">
+          <label class="field-label">&nbsp;</label>
+          <button class="btn" style="border-color:var(--red);color:var(--red)" onclick="runBudget()" id="runBudgetBtn" disabled>▶ APPLY BUDGET</button>
+        </div>
+        <div class="field-group" id="budgetStatusGroup" style="display:none">
+          <label class="field-label">STATUS</label>
+          <div style="font-family:var(--font-cond);font-size:18px;font-weight:900" id="budgetStatusLabel">—</div>
+        </div>
+        <div class="field-group" id="budgetCostGroup" style="display:none">
+          <label class="field-label">COST USED / BUDGET</label>
+          <div style="font-family:var(--font-cond);font-size:18px;font-weight:700;color:var(--amber)" id="budgetCostLabel">—</div>
+        </div>
+        <div class="field-group" id="budgetConnGroup" style="display:none">
+          <label class="field-label">CONNECTED / TOTAL</label>
+          <div style="font-family:var(--font-cond);font-size:18px;font-weight:700;color:var(--cyan)" id="budgetConnLabel">—</div>
+        </div>
+      </div>
+
+      <div id="budgetResultSection" style="display:none;margin-top:16px">
+        <div class="grid-2" style="gap:16px">
+          <!-- Partial MST Canvas -->
+          <div>
+            <div class="section-header">PARTIAL MST VISUALISATION</div>
+            <canvas id="budgetCanvas" style="width:100%;height:320px;background:#f7fafd;border:1px solid var(--border);display:block"></canvas>
+            <div style="font-family:var(--font-mono);font-size:11px;color:var(--muted);margin-top:6px">
+              <span style="color:#e53935">◯</span> Over-budget / unconnected &nbsp;
+              <span style="color:#1565c0">◉</span> Connected node &nbsp;
+              <span style="color:#e53935">─── </span>Rejected edge
+            </div>
+          </div>
+          <!-- Step Trace -->
+          <div>
+            <div class="section-header">STEP-BY-STEP TRACE</div>
+            <div class="trace-container" id="budgetTrace" style="max-height:320px"></div>
+          </div>
+        </div>
+        <!-- Unconnected neighbourhoods -->
+        <div id="budgetUnconnectedRow" style="margin-top:14px;display:none">
+          <div class="section-header">UNCONNECTED NEIGHBOURHOODS (OVER BUDGET)</div>
+          <div id="budgetUnconnectedList" style="font-family:var(--font-mono);font-size:12px;color:var(--red);padding:8px 0;"></div>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /tab-mst -->
 
 
@@ -297,6 +352,58 @@
         </div>
       </div>
 
+      <!-- Compaction Panel -->
+      <div class="panel red-accent" id="compactionPanel" style="display:none">
+        <div class="panel-title" style="color:var(--red)">▣ MEMORY COMPACTION</div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:14px;">
+          Simulate compaction on a chosen strategy: all allocated blocks slide left, consolidating all free space into one contiguous block at the end.
+        </p>
+        <div class="field-row" style="margin-bottom:14px">
+          <div class="field-group">
+            <label class="field-label">COMPACT STRATEGY</label>
+            <select class="field-input wide" id="compactStrategySelect" style="background:var(--bg-0);border:1px solid var(--border);color:var(--white);font-family:var(--font-mono);font-size:13px;padding:8px 12px;outline:none">
+              <option value="first_fit">First Fit</option>
+              <option value="best_fit">Best Fit</option>
+              <option value="worst_fit">Worst Fit</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label class="field-label">&nbsp;</label>
+            <button class="btn" style="border-color:var(--red);color:var(--red)" onclick="runCompaction()">▣ COMPACT MEMORY</button>
+          </div>
+        </div>
+
+        <div id="compactionResult" style="display:none">
+          <div class="section-header" style="margin-bottom:10px">BEFORE COMPACTION</div>
+          <div class="mem-bar-container" id="compactBarBefore" style="margin-bottom:6px"></div>
+          <div style="font-family:var(--font-mono);font-size:11px;color:var(--muted);margin-bottom:16px" id="compactStatsBefore"></div>
+
+          <div style="text-align:center;font-family:var(--font-cond);font-size:13px;letter-spacing:2px;color:var(--red);margin:10px 0">
+            ▼ COMPACTING — SLIDING ALLOCATED BLOCKS LEFT ▼
+          </div>
+
+          <!-- Move log -->
+          <div class="section-header" style="margin:10px 0 6px">BLOCK MOVES</div>
+          <div class="trace-container" id="compactMoveLog" style="max-height:180px;margin-bottom:16px"></div>
+
+          <div class="section-header" style="margin-bottom:10px">AFTER COMPACTION</div>
+          <div class="mem-bar-container" id="compactBarAfter" style="margin-bottom:6px"></div>
+          <div style="font-family:var(--font-mono);font-size:11px;color:var(--muted);margin-bottom:8px" id="compactStatsAfter"></div>
+
+          <!-- Before/After stats comparison -->
+          <div class="grid-2" style="margin-top:12px;gap:12px">
+            <div class="report-section" style="padding:14px">
+              <div class="report-heading" style="font-size:11px">BEFORE</div>
+              <div class="stat-row" style="margin-bottom:0" id="compactBeforeStats"></div>
+            </div>
+            <div class="report-section" style="padding:14px">
+              <div class="report-heading" style="font-size:11px;color:var(--green)">AFTER</div>
+              <div class="stat-row" style="margin-bottom:0" id="compactAfterStats"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div><!-- /memResultsSection -->
 
   </div><!-- /tab-memory -->
@@ -319,7 +426,7 @@
 <!-- ══════════════════════════════════════════
      JAVASCRIPT
 ══════════════════════════════════════════ -->
-<script src="app.js"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>
 

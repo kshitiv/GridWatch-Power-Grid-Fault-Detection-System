@@ -37,6 +37,7 @@ function handleFile(input) {
   document.getElementById('uploadLabel').textContent = '📄 ' + f.name;
   document.getElementById('uploadZone').style.borderColor = 'var(--amber)';
   document.getElementById('runMSTBtn').disabled = false;
+  document.getElementById('runBudgetBtn').disabled = false;
   toast('File loaded: ' + f.name);
 }
 
@@ -51,6 +52,7 @@ uz.addEventListener('drop', e => {
     document.getElementById('uploadLabel').textContent = '📄 ' + f.name;
     document.getElementById('uploadZone').style.borderColor = 'var(--amber)';
     document.getElementById('runMSTBtn').disabled = false;
+    document.getElementById('runBudgetBtn').disabled = false;
     toast('File loaded: ' + f.name);
   }
 });
@@ -119,6 +121,11 @@ function clearMST() {
   document.getElementById('uploadLabel').textContent = 'DROP GRAPH FILE HERE';
   document.getElementById('uploadZone').style.borderColor = '';
   document.getElementById('runMSTBtn').disabled = true;
+  document.getElementById('runBudgetBtn').disabled = true;
+  document.getElementById('budgetResultSection').style.display = 'none';
+  document.getElementById('budgetStatusGroup').style.display = 'none';
+  document.getElementById('budgetCostGroup').style.display = 'none';
+  document.getElementById('budgetConnGroup').style.display = 'none';
   document.getElementById('mstStatsRow').style.display = 'none';
   document.getElementById('mstToggleRow').style.display = 'none';
   document.getElementById('comparisonPanel').style.display = 'none';
@@ -387,6 +394,8 @@ async function runMemory() {
     memResult = data;
     renderMemResults(data);
     document.getElementById('memResultsSection').style.display = 'block';
+    document.getElementById('compactionPanel').style.display = 'block';
+    document.getElementById('compactionResult').style.display = 'none';
 
     const sp = document.getElementById('statusMEM');
     sp.className = 'status-pill active';
@@ -574,3 +583,255 @@ function buildReport() {
 }
 
 window.addEventListener('resize', () => { if (graphData) renderGraph(); });
+
+// ─────────────────────────────────────────────
+//  BUDGET-CONSTRAINED PARTIAL MST
+// ─────────────────────────────────────────────
+let budgetResult = null;
+
+async function runBudget() {
+  if (!uploadedFile) { toast('Please upload a graph file first', 'error'); return; }
+  const budget = parseFloat(document.getElementById('budgetInput').value);
+  if (isNaN(budget) || budget <= 0) { toast('Enter a valid budget (km)', 'error'); return; }
+
+  setLoading(true, 'COMPUTING PARTIAL MST WITHIN BUDGET…');
+  const form = new FormData();
+  form.append('file', uploadedFile);
+  form.append('budget', budget);
+
+  try {
+    const res  = await fetch('/api/budget', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Server error', 'error'); return; }
+
+    budgetResult = data;
+    renderBudgetResult(data, budget);
+    toast(data.is_complete ? 'Full MST fits within budget!' : `Partial MST: ${data.num_connected}/${data.num_total} neighbourhoods connected`, data.is_complete ? 'success' : 'info');
+  } catch(e) {
+    toast('Network error: ' + e.message, 'error');
+  } finally {
+    setLoading(false);
+  }
+}
+
+function renderBudgetResult(data, budget) {
+  const isComplete = data.is_complete;
+
+  // Status labels
+  document.getElementById('budgetStatusGroup').style.display = '';
+  document.getElementById('budgetCostGroup').style.display   = '';
+  document.getElementById('budgetConnGroup').style.display   = '';
+
+  const sl = document.getElementById('budgetStatusLabel');
+  sl.textContent = isComplete ? '✔ FULL MST' : '⚠ PARTIAL';
+  sl.style.color = isComplete ? 'var(--green)' : 'var(--red)';
+
+  document.getElementById('budgetCostLabel').textContent =
+    data.total_cost.toFixed(1) + ' / ' + budget.toFixed(1) + ' km';
+  document.getElementById('budgetConnLabel').textContent =
+    data.num_connected + ' / ' + data.num_total;
+
+  // Show result section
+  document.getElementById('budgetResultSection').style.display = 'block';
+
+  // Trace
+  renderBudgetTrace('budgetTrace', data.steps);
+
+  // Canvas
+  renderBudgetGraph(data);
+
+  // Unconnected list
+  const connected = new Set(data.connected_nodes);
+  const unconnected = (data.nodes || []).filter(n => !connected.has(n));
+  const ucRow = document.getElementById('budgetUnconnectedRow');
+  if (!isComplete && unconnected.length > 0) {
+    ucRow.style.display = 'block';
+    document.getElementById('budgetUnconnectedList').textContent =
+      unconnected.map(n => `✗ ${n}`).join('   ');
+  } else {
+    ucRow.style.display = 'none';
+  }
+}
+
+function renderBudgetTrace(containerId, steps) {
+  const c = document.getElementById(containerId);
+  c.innerHTML = '';
+  steps.forEach((s, i) => {
+    const actionMap = {
+      'START': 'start', 'DONE': 'done',
+      'ACCEPT': 'accept', 'SKIP': 'skip', 'OVER_BUDGET': 'skip'
+    };
+    const cls = actionMap[s.action] || 'skip';
+    const div = document.createElement('div');
+    div.className = 'trace-step ' + cls;
+    div.style.animationDelay = (i * 15) + 'ms';
+    const remaining = s.budget_remaining !== undefined
+      ? ` <span style="color:var(--muted);font-size:10px">[rem: ${s.budget_remaining.toFixed(1)} km]</span>` : '';
+    div.innerHTML = `
+      <span class="trace-step-num mono">${String(s.step).padStart(3,'0')}</span>
+      <span class="trace-step-badge ${cls}">${s.action}</span>
+      <span class="trace-step-detail">${s.detail}${remaining}</span>
+    `;
+    c.appendChild(div);
+  });
+  setTimeout(() => { c.scrollTop = c.scrollHeight; }, steps.length * 16 + 100);
+}
+
+function renderBudgetGraph(data) {
+  const canvas = document.getElementById('budgetCanvas');
+  const W = canvas.offsetWidth, H = canvas.offsetHeight || 320;
+  canvas.width  = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+
+  const nodes = data.nodes || [];
+  if (!nodes.length) return;
+
+  const allEdges     = data.all_edges || [];
+  const partialEdges = data.partial_edges || [];
+  const connectedSet = new Set(data.connected_nodes || []);
+
+  const partialSet = new Set();
+  partialEdges.forEach(e => { partialSet.add(e.from + '|' + e.to); partialSet.add(e.to + '|' + e.from); });
+
+  const n  = nodes.length;
+  const cx = W/2, cy = H/2;
+  const r  = Math.min(W, H) * 0.36;
+  const pos = {};
+  nodes.forEach((nd, i) => {
+    const angle = (2 * Math.PI * i / n) - Math.PI/2;
+    pos[nd] = { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
+  });
+
+  // Draw all edges (dim)
+  allEdges.forEach(e => {
+    const p1 = pos[e.from], p2 = pos[e.to];
+    if (!p1 || !p2) return;
+    const isPartial = partialSet.has(e.from + '|' + e.to);
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.strokeStyle = isPartial ? '#1565c0' : 'rgba(229,57,53,0.25)';
+    ctx.lineWidth   = isPartial ? 3 : 1;
+    if (isPartial) { ctx.shadowColor = '#1565c0'; ctx.shadowBlur = 8; }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    const mx = (p1.x + p2.x)/2, my = (p1.y + p2.y)/2;
+    ctx.font      = '10px Share Tech Mono';
+    ctx.fillStyle = isPartial ? '#1565c0' : 'rgba(229,57,53,0.5)';
+    ctx.textAlign = 'center';
+    ctx.fillText(e.weight, mx, my - 4);
+  });
+
+  // Draw nodes
+  nodes.forEach(nd => {
+    const { x, y } = pos[nd];
+    const isConn = connectedSet.has(nd);
+    ctx.beginPath();
+    ctx.arc(x, y, 20, 0, 2*Math.PI);
+    ctx.fillStyle   = isConn ? 'rgba(21,101,192,0.12)' : 'rgba(229,57,53,0.08)';
+    ctx.strokeStyle = isConn ? '#1565c0' : '#e53935';
+    ctx.lineWidth   = isConn ? 2.5 : 1.5;
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.font      = 'bold 13px Barlow Condensed';
+    ctx.fillStyle = isConn ? '#1565c0' : '#e53935';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(nd, x, y);
+  });
+}
+
+
+// ─────────────────────────────────────────────
+//  MEMORY COMPACTION
+// ─────────────────────────────────────────────
+async function runCompaction() {
+  if (requestQueue.length === 0) { toast('Run a memory simulation first', 'error'); return; }
+  const totalMem = parseInt(document.getElementById('totalMemory').value);
+  const strategy = document.getElementById('compactStrategySelect').value;
+
+  setLoading(true, 'COMPACTING MEMORY…');
+
+  try {
+    const res  = await fetch('/api/compact', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ total_memory: totalMem, requests: requestQueue, strategy })
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Server error', 'error'); return; }
+
+    renderCompactionResult(data, totalMem);
+    document.getElementById('compactionPanel').style.display = 'block';
+    document.getElementById('compactionResult').style.display = 'block';
+    toast('Compaction complete!', 'success');
+  } catch(e) {
+    toast('Network error: ' + e.message, 'error');
+  } finally {
+    setLoading(false);
+  }
+}
+
+function renderCompactionResult(data, totalMem) {
+  const c = data.compaction;
+
+  // Before bar
+  renderMemBar('compactBarBefore', c.before, totalMem);
+  const sb = data.stats_before;
+  document.getElementById('compactStatsBefore').textContent =
+    `Used: ${sb.used} KB  |  Free: ${sb.free} KB  |  Free blocks: ${sb.num_free_blocks}  |  Largest free: ${sb.largest_free_block} KB  |  Ext. frag: ${(sb.external_frag_ratio*100).toFixed(1)}%`;
+
+  // Move log
+  const ml = document.getElementById('compactMoveLog');
+  ml.innerHTML = '';
+  if (c.moves.length === 0) {
+    ml.innerHTML = '<div class="trace-step start"><span class="trace-step-badge start">INFO</span><span class="trace-step-detail">No moves needed — memory already compact.</span></div>';
+  } else {
+    c.moves.forEach((mv, i) => {
+      const div = document.createElement('div');
+      div.className = 'trace-step accept';
+      div.style.animationDelay = (i * 40) + 'ms';
+      div.innerHTML = `
+        <span class="trace-step-num mono">${String(i+1).padStart(3,'0')}</span>
+        <span class="trace-step-badge accept">MOVE</span>
+        <span class="trace-step-detail">
+          Block <strong style="color:var(--cyan)">${mv.label}</strong> (${mv.size} KB)
+          moved from addr <span class="text-amber">${mv.from}</span>
+          → <span class="text-green">${mv.to}</span>
+        </span>
+      `;
+      ml.appendChild(div);
+    });
+  }
+
+  // After bar
+  renderMemBar('compactBarAfter', c.after, totalMem);
+  const sa = data.stats_after;
+  document.getElementById('compactStatsAfter').textContent =
+    `Used: ${sa.used} KB  |  Free: ${sa.free} KB  |  Free blocks: ${sa.num_free_blocks}  |  Largest free: ${sa.largest_free_block} KB  |  Ext. frag: ${(sa.external_frag_ratio*100).toFixed(1)}%`;
+
+  // Mini stat comparisons
+  function miniStats(elId, s, color) {
+    document.getElementById(elId).innerHTML = `
+      <div class="stat-box" style="padding:8px 12px;flex:1">
+        <div class="stat-label">FREE BLOCKS</div>
+        <div class="stat-value" style="font-size:20px;color:${color}">${s.num_free_blocks}</div>
+      </div>
+      <div class="stat-box" style="padding:8px 12px;flex:1">
+        <div class="stat-label">LARGEST FREE</div>
+        <div class="stat-value" style="font-size:20px;color:${color}">${s.largest_free_block} KB</div>
+      </div>
+      <div class="stat-box" style="padding:8px 12px;flex:1">
+        <div class="stat-label">EXT. FRAG</div>
+        <div class="stat-value" style="font-size:20px;color:${s.external_frag_ratio > 0.3 ? 'var(--red)' : 'var(--green)'}">${(s.external_frag_ratio*100).toFixed(1)}%</div>
+      </div>
+    `;
+  }
+  miniStats('compactBeforeStats', sb, 'var(--muted)');
+  miniStats('compactAfterStats',  sa, 'var(--green)');
+}
+

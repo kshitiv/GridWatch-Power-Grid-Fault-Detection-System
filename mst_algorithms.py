@@ -260,3 +260,121 @@ def compare_and_recommend(nodes, edges,
     report["reasoning"] = reasoning
 
     return report
+
+
+# ─────────────────────────────────────────────
+#  PARTIAL MST — BUDGET CONSTRAINT
+# ─────────────────────────────────────────────
+def partial_mst_within_budget(nodes, edges, budget):
+    """
+    Find the maximum number of neighbourhoods connectable within a budget.
+    Uses a greedy Kruskal-style approach: add cheapest edges first until
+    budget is exhausted or MST is complete.
+
+    Returns:
+        connected_nodes : list of nodes reachable in partial MST
+        partial_edges   : list of edge dicts added
+        total_cost      : float — actual cost used
+        budget_remaining: float
+        steps           : trace list
+        is_complete     : bool — True if full MST fits in budget
+    """
+    sorted_edges = sorted(edges, key=lambda x: x[0])
+    uf = UnionFind(nodes)
+    partial_edges = []
+    steps = []
+    total = 0.0
+
+    steps.append({
+        "step": 0,
+        "action": "START",
+        "detail": f"Budget = {budget:.1f} km. Attempting partial MST on {len(nodes)} nodes with {len(sorted_edges)} edges.",
+        "edge": None,
+        "accepted": None,
+        "cost_so_far": 0,
+        "budget_remaining": budget
+    })
+
+    for i, (w, u, v) in enumerate(sorted_edges):
+        step_num = i + 1
+
+        if uf.find(u) == uf.find(v):
+            steps.append({
+                "step": step_num,
+                "action": "SKIP",
+                "detail": f"Edge ({u} — {v}, cost={w:.1f}) skipped — would form a CYCLE.",
+                "edge": {"from": u, "to": v, "weight": w},
+                "accepted": False,
+                "cost_so_far": total,
+                "budget_remaining": budget - total
+            })
+            continue
+
+        if total + w > budget:
+            steps.append({
+                "step": step_num,
+                "action": "OVER_BUDGET",
+                "detail": f"Edge ({u} — {v}, cost={w:.1f}) SKIPPED — would exceed budget "
+                          f"({total:.1f} + {w:.1f} = {total+w:.1f} > {budget:.1f}).",
+                "edge": {"from": u, "to": v, "weight": w},
+                "accepted": False,
+                "cost_so_far": total,
+                "budget_remaining": budget - total
+            })
+            continue
+
+        uf.union(u, v)
+        partial_edges.append({"from": u, "to": v, "weight": w})
+        total += w
+
+        steps.append({
+            "step": step_num,
+            "action": "ACCEPT",
+            "detail": f"✔ Edge ({u} — {v}, cost={w:.1f}) added. Spent: {total:.1f} / {budget:.1f} km. "
+                      f"Remaining: {budget - total:.1f} km.",
+            "edge": {"from": u, "to": v, "weight": w},
+            "accepted": True,
+            "cost_so_far": total,
+            "budget_remaining": budget - total
+        })
+
+        if len(partial_edges) == len(nodes) - 1:
+            break
+
+    # Collect which nodes are actually connected (part of any accepted edge)
+    connected_set = set()
+    for e in partial_edges:
+        connected_set.add(e["from"])
+        connected_set.add(e["to"])
+
+    # Also include isolated start node if no edges accepted
+    if not connected_set and nodes:
+        connected_set.add(nodes[0])
+
+    is_complete = (len(partial_edges) == len(nodes) - 1)
+
+    steps.append({
+        "step": len(sorted_edges) + 1,
+        "action": "DONE",
+        "detail": (
+            f"{'✔ FULL MST fits within budget!' if is_complete else '⚠ PARTIAL MST — budget exhausted.'} "
+            f"Connected {len(connected_set)} / {len(nodes)} neighbourhoods. "
+            f"Cost used: {total:.1f} / {budget:.1f} km. "
+            f"Budget remaining: {budget - total:.1f} km."
+        ),
+        "edge": None,
+        "accepted": None,
+        "cost_so_far": total,
+        "budget_remaining": budget - total
+    })
+
+    return {
+        "connected_nodes":  sorted(connected_set),
+        "partial_edges":    partial_edges,
+        "total_cost":       round(total, 4),
+        "budget_remaining": round(budget - total, 4),
+        "steps":            steps,
+        "is_complete":      is_complete,
+        "num_connected":    len(connected_set),
+        "num_total":        len(nodes)
+    }

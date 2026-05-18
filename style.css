@@ -422,9 +422,11 @@ body::before {
 .best-row td { color: var(--green) !important; }
 
 .req-list {
-  max-height: 240px;
+  max-height: 400px;
   overflow-y: auto;
   margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
 }
 .req-item {
   display: flex; align-items: center; gap: 10px;
